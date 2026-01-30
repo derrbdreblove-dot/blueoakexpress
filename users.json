@@ -1,0 +1,108 @@
+{
+    "admin@blueoakexpress.com": {
+        "email": "admin@blueoakexpress.com",
+        "name": "Blueoakexpress Admin",
+        "password": "admin123",
+        "role": "admin",
+        "active": true
+    },
+    "alex.owner@blueoakexpress.com": {
+        "email": "alex.owner@blueoakexpress.com",
+        "name": "Alex Carter",
+        "password": "alex123",
+        "role": "user",
+        "active": true
+    },
+    "mina.owner@blueoakexpress.com": {
+        "email": "mina.owner@blueoakexpress.com",
+        "name": "Mina Tanaka",
+        "password": "mina123",
+        "role": "user",
+        "active": true
+    },
+    "kwame.owner@blueoakexpress.com": {
+        "email": "kwame.owner@blueoakexpress.com",
+        "name": "Kwame Mensah",
+        "password": "kwame123",
+        "role": "user",
+        "active": true
+    },
+    "hans.owner@blueoakexpress.com": {
+        "email": "hans.owner@blueoakexpress.com",
+        "name": "Hans Keller",
+        "password": "hans123",
+        "role": "user",
+        "active": true
+    },
+    "lucas.owner@blueoakexpress.com": {
+        "email": "lucas.owner@blueoakexpress.com",
+        "name": "Lucas Rivera",
+        "password": "lucas123",
+        "role": "user",
+        "active": true
+    },
+    "amina.owner@blueoakexpress.com": {
+        "email": "amina.owner@blueoakexpress.com",
+        "name": "Amina Diallo",
+        "password": "amina123",
+        "role": "user",
+        "active": true
+    },
+    "chidi.owner@blueoakexpress.com": {
+        "email": "chidi.owner@blueoakexpress.com",
+        "name": "Chidi Okafor",
+        "password": "chidi123",
+        "role": "user",
+        "active": true
+    },
+    "sophia.owner@blueoakexpress.com": {
+        "email": "sophia.owner@blueoakexpress.com",
+        "name": "Sophia M\u00fcller",
+        "password": "sophia123",
+        "role": "user",
+        "active": true
+    },
+    "kofi.owner@blueoakexpress.com": {
+        "email": "kofi.owner@blueoakexpress.com",
+        "name": "Kofi Boateng",
+        "password": "kofi123",
+        "role": "user",
+        "active": true
+    },
+    "maria.owner@blueoakexpress.com": {
+        "email": "maria.owner@blueoakexpress.com",
+        "name": "Maria Silva",
+        "password": "maria123",
+        "role": "user",
+        "active": true
+    },
+    "jason.owner@blueoakexpress.com": {
+        "email": "jason.owner@blueoakexpress.com",
+        "name": "Jason Brown",
+        "password": "jason123",
+        "role": "user",
+        "active": true
+    },
+    "hana.owner@blueoakexpress.com": {
+        "email": "hana.owner@blueoakexpress.com",
+        "name": "Hana Kim",
+        "password": "hana123",
+        "role": "user",
+        "active": true
+    },
+    "noah.owner@blueoakexpress.com": {
+        "email": "noah.owner@blueoakexpress.com",
+        "name": "Noah Njoroge",
+        "password": "noah123",
+        "role": "user",
+        "active": true
+    },
+    "tra@gmail.com": {
+        "email": "tra@gmail.com",
+        "name": "derrbdreb love",
+        "password": "tra123",
+        "role": "user",
+        "active": true,
+        "created_at": "2026-01-29 15:03"
+    }
+}

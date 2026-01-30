@@ -1,0 +1,1020 @@
+from flask import Flask, render_template, request, redirect, url_for, session
+import json
+import os
+from datetime import datetime
+import random
+import string
+
+app = Flask(__name__)
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "change_this_secret_key_now")
+
+SHIPMENTS_FILE = "shipments.json"
+USERS_FILE = "users.json"
+APPLICATIONS_FILE = "applications.json"
+CHATS_FILE = "chats.json"   # NEW: chat storage
+
+DEFAULT_ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@blueoakexpress.com").strip().lower()
+DEFAULT_ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+
+
+# -----------------------
+# JSON helpers (safe)
+# -----------------------
+def load_json(path, default):
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                return default
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                return default
+    return default
+
+
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+
+# -----------------------
+# Time helpers
+# -----------------------
+def now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def now_ts():
+    return int(datetime.utcnow().timestamp())
+
+
+def parse_dt(dt_str: str):
+    try:
+        return datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+    except Exception:
+        return None
+
+
+def sort_events(events):
+    if not isinstance(events, list):
+        return []
+
+    def key_fn(e):
+        d = parse_dt((e or {}).get("date", ""))
+        return d if d else datetime.max
+
+    return sorted(events, key=key_fn)
+
+
+# -----------------------
+# Users / Auth helpers (PLAIN PASSWORDS)
+# -----------------------
+def ensure_default_admin_exists():
+    users = load_json(USERS_FILE, {})
+    if DEFAULT_ADMIN_EMAIL not in users:
+        users[DEFAULT_ADMIN_EMAIL] = {
+            "email": DEFAULT_ADMIN_EMAIL,
+            "name": "Blueoakexpress Admin",
+            "password": DEFAULT_ADMIN_PASSWORD,  # PLAIN
+            "role": "admin",
+            "active": True,
+            "created_at": now_str(),
+        }
+        save_json(USERS_FILE, users)
+
+
+def current_user():
+    email = session.get("user_email")
+    if not email:
+        return None
+    email = email.strip().lower()
+
+    users = load_json(USERS_FILE, {})
+    u = users.get(email)
+    if not u or not u.get("active", True):
+        return None
+
+    return {
+        "email": u.get("email", email),
+        "name": u.get("name", ""),
+        "role": u.get("role", "user"),
+        "active": u.get("active", True),
+    }
+
+
+def is_logged_in():
+    return current_user() is not None
+
+
+def is_admin():
+    u = current_user()
+    return bool(u and u.get("role") == "admin")
+
+
+def require_login(next_url=None):
+    if not is_logged_in():
+        if next_url:
+            return redirect(url_for("login", next=next_url))
+        return redirect(url_for("login"))
+    return None
+
+
+def require_admin(next_url=None):
+    # Always ensure admin exists before checking
+    ensure_default_admin_exists()
+
+    if not is_admin():
+        if next_url:
+            return redirect(url_for("login", next=next_url))
+        return redirect(url_for("login"))
+    return None
+
+
+
+# -----------------------
+# Fees helpers
+# -----------------------
+def _to_float(v):
+    try:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if s == "":
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def apply_fees_logic(shipment: dict, status: str, fees_amount_raw, fees_reason_raw, clear_fees: bool):
+    if clear_fees:
+        shipment["fees"] = None
+        return
+
+    fees_amount = _to_float(fees_amount_raw)
+    fees_reason = (fees_reason_raw or "").strip() or "Customs and Taxes"
+
+    if status == "On Hold" and fees_amount is not None:
+        fees = shipment.get("fees")
+        if not isinstance(fees, dict):
+            fees = {}
+        fees["amount"] = fees_amount
+        fees["reason"] = fees_reason
+        fees["paid"] = False
+        fees.setdefault("payment_submitted", False)
+        shipment["fees"] = fees
+
+
+def add_status_event_if_changed(shipment: dict, old_status: str, new_status: str):
+    if (old_status or "") != (new_status or ""):
+        shipment.setdefault("events", []).append({
+            "date": now_str(),
+            "location": "Admin Update",
+            "description": f"Status updated: {old_status or 'N/A'} → {new_status}"
+        })
+
+
+# -----------------------
+# Route auto-generation (simple + realistic)
+# -----------------------
+CITY_DB = {
+    "accra": {"lat": 5.6037, "lng": -0.1870, "label": "Accra, Ghana"},
+    "kumasi": {"lat": 6.6885, "lng": -1.6244, "label": "Kumasi, Ghana"},
+    "tema": {"lat": 5.6698, "lng": -0.0166, "label": "Tema, Ghana"},
+    "lagos": {"lat": 6.5244, "lng": 3.3792, "label": "Lagos, Nigeria"},
+    "abuja": {"lat": 9.0765, "lng": 7.3986, "label": "Abuja, Nigeria"},
+    "london": {"lat": 51.5074, "lng": -0.1278, "label": "London, UK"},
+    "paris": {"lat": 48.8566, "lng": 2.3522, "label": "Paris, France"},
+    "new york": {"lat": 40.7128, "lng": -74.0060, "label": "New York, USA"},
+    "dubai": {"lat": 25.2048, "lng": 55.2708, "label": "Dubai, UAE"},
+    "toronto": {"lat": 43.6532, "lng": -79.3832, "label": "Toronto, Canada"},
+}
+
+def find_city_coords(text: str):
+    if not text:
+        return None
+    t = text.strip().lower()
+    for k, v in CITY_DB.items():
+        if k in t:
+            return v
+    return None
+
+def lerp(a, b, t):
+    return a + (b - a) * t
+
+def generate_route(origin_text: str, dest_text: str):
+    o = find_city_coords(origin_text)
+    d = find_city_coords(dest_text)
+
+    if not o:
+        o = {"lat": 5.6037, "lng": -0.1870, "label": origin_text or "Origin"}
+    if not d:
+        d = {"lat": o["lat"] + 10.0, "lng": o["lng"] + 10.0, "label": dest_text or "Destination"}
+
+    labels = [
+        f"Origin Scan — {o['label']}",
+        "Departed origin facility",
+        "In transit — regional hub",
+        "Arrived in destination country",
+        f"Destination Facility — {d['label']}",
+    ]
+    steps = [0.0, 0.22, 0.55, 0.82, 1.0]
+    points = []
+    for lab, t in zip(labels, steps):
+        points.append({
+            "lat": round(lerp(o["lat"], d["lat"], t), 6),
+            "lng": round(lerp(o["lng"], d["lng"], t), 6),
+            "label": lab
+        })
+    return points
+
+
+# -----------------------
+# CHAT helpers (NEW)
+# -----------------------
+def _chat_safe_tracking(tracking_id: str):
+    return (tracking_id or "").strip()
+
+def _make_code(n=8):
+    alphabet = string.ascii_uppercase + string.digits
+    return "".join(random.choice(alphabet) for _ in range(n))
+
+def chat_get_thread(tracking_id: str):
+    chats = load_json(CHATS_FILE, {})
+    return chats.get(tracking_id)
+
+def chat_ensure_thread(tracking_id: str, owner_email: str):
+    tracking_id = _chat_safe_tracking(tracking_id)
+    chats = load_json(CHATS_FILE, {})
+    th = chats.get(tracking_id)
+    if not isinstance(th, dict):
+        th = {"tracking_id": tracking_id, "owner_email": owner_email, "messages": []}
+        chats[tracking_id] = th
+        save_json(CHATS_FILE, chats)
+    else:
+        th.setdefault("messages", [])
+        if owner_email and not th.get("owner_email"):
+            th["owner_email"] = owner_email
+            chats[tracking_id] = th
+            save_json(CHATS_FILE, chats)
+    return th
+
+def chat_add_message(tracking_id: str, sender: str, text: str):
+    tracking_id = _chat_safe_tracking(tracking_id)
+    text = (text or "").strip()
+    if not text:
+        return
+
+    chats = load_json(CHATS_FILE, {})
+    th = chats.get(tracking_id)
+    if not isinstance(th, dict):
+        th = {"tracking_id": tracking_id, "owner_email": "", "messages": []}
+
+    th.setdefault("messages", [])
+    th["messages"].append({
+        "ts": now_ts(),
+        "time": now_str(),
+        "sender": sender,     # "user" | "admin" | "system"
+        "text": text
+    })
+
+    chats[tracking_id] = th
+    save_json(CHATS_FILE, chats)
+
+def chat_mark_read(tracking_id: str):
+    tracking_id = _chat_safe_tracking(tracking_id)
+    last_read = session.get("chat_last_read", {})
+    if not isinstance(last_read, dict):
+        last_read = {}
+    last_read[tracking_id] = now_ts()
+    session["chat_last_read"] = last_read
+
+def chat_unread_count_for_user(user_email: str):
+    """
+    Returns (count, latest_tracking_id) for unread admin/system messages for this user.
+    """
+    user_email = (user_email or "").strip().lower()
+    if not user_email:
+        return (0, None)
+
+    chats = load_json(CHATS_FILE, {})
+    last_read = session.get("chat_last_read", {})
+    if not isinstance(last_read, dict):
+        last_read = {}
+
+    unread = 0
+    latest_tid = None
+    latest_ts = -1
+
+    for tid, th in chats.items():
+        if not isinstance(th, dict):
+            continue
+        owner = (th.get("owner_email") or "").strip().lower()
+        if owner != user_email:
+            continue
+
+        lr = int(last_read.get(tid, 0) or 0)
+        msgs = th.get("messages") or []
+        for m in msgs:
+            if (m.get("sender") in ("admin", "system")) and int(m.get("ts", 0)) > lr:
+                unread += 1
+                if int(m.get("ts", 0)) > latest_ts:
+                    latest_ts = int(m.get("ts", 0))
+                    latest_tid = tid
+
+    return (unread, latest_tid)
+
+@app.context_processor
+def inject_chat_notifications():
+    u = current_user()
+    if not u or u.get("role") == "admin":
+        return {"chat_unread_count": 0, "chat_latest_tracking_id": None}
+    c, tid = chat_unread_count_for_user(u.get("email"))
+    return {"chat_unread_count": c, "chat_latest_tracking_id": tid}
+
+
+# -----------------------
+# Home
+# -----------------------
+@app.route("/")
+def index():
+    return render_template("index.html", user=current_user())
+
+
+# -----------------------
+# Login / Logout
+# -----------------------
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    ensure_default_admin_exists()
+
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        users = load_json(USERS_FILE, {})
+        u = users.get(email)
+
+        if (not u) or (not u.get("active", True)) or (u.get("password") != password):
+            return render_template("login.html", user=current_user(), error="Invalid email or password"), 401
+
+        session["user_email"] = email
+
+        nxt = request.args.get("next")
+        if u.get("role") == "admin":
+            return redirect(url_for("admin_panel"))
+        return redirect(nxt or url_for("my_shipments"))
+
+    return render_template("login.html", user=current_user())
+
+
+@app.route("/logout")
+def logout():
+    session.pop("user_email", None)
+    return redirect(url_for("index"))
+
+
+# -----------------------
+# Sign up (APPLICATION ONLY)
+# -----------------------
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        reason = request.form.get("reason", "").strip()
+
+        if not name or not email:
+            return render_template("signup.html", user=current_user(),
+                                   error="Name and email are required."), 400
+
+        users = load_json(USERS_FILE, {})
+        if email in users:
+            return render_template("signup.html", user=current_user(),
+                                   error="This email already has an account. Please log in."), 400
+
+        applications = load_json(APPLICATIONS_FILE, {})
+        existing = applications.get(email)
+        if existing and existing.get("status") == "pending":
+            return render_template("signup.html", user=current_user(),
+                                   error="Your application is already pending. Please wait for approval."), 400
+
+        applications[email] = {
+            "name": name,
+            "email": email,
+            "reason": reason or "",
+            "status": "pending",
+            "submitted_at": now_str(),
+            "admin_note": ""
+        }
+        save_json(APPLICATIONS_FILE, applications)
+
+        return render_template("signup.html", user=current_user(),
+                               success="Account creating pending approval. You will be contacted by email after review.")
+
+    return render_template("signup.html", user=current_user())
+
+
+# -----------------------
+# My Shipments
+# -----------------------
+@app.route("/my_shipments")
+def my_shipments():
+    gate = require_login(next_url=url_for("my_shipments"))
+    if gate:
+        return gate
+
+    u = current_user()
+    viewer_email = (u.get("email") or "").strip().lower()
+
+    shipments = load_json(SHIPMENTS_FILE, {})
+    my_list = []
+    for tid, s in shipments.items():
+        owner = (s.get("owner_email") or "").strip().lower()
+        if owner == viewer_email:
+            my_list.append({
+                "tracking_id": tid,
+                "status": s.get("status", "Unknown"),
+                "estimated_delivery": s.get("estimated_delivery"),
+                "estimated_delivery_tbd_on_hold": bool(s.get("estimated_delivery_tbd_on_hold", False)),
+                "origin": s.get("origin"),
+                "destination": s.get("destination"),
+                "fees": s.get("fees"),
+            })
+
+    my_list.sort(key=lambda x: (x.get("estimated_delivery") or ""), reverse=True)
+    return render_template("my_shipments.html", user=u, shipments=my_list)
+
+
+@app.route("/my-shipments")
+def my_shipments_alias():
+    return redirect(url_for("my_shipments"))
+
+
+# -----------------------
+# Tracking
+# -----------------------
+@app.route("/track", methods=["GET", "POST"])
+def track():
+    tracking_id = (
+        request.form.get("tracking_id", "").strip()
+        if request.method == "POST"
+        else request.args.get("tracking_id", "").strip()
+    )
+
+    if not tracking_id:
+        return render_template("index.html", error="Enter a tracking ID", user=current_user())
+
+    shipments = load_json(SHIPMENTS_FILE, {})
+    shipment = shipments.get(tracking_id)
+    if not shipment:
+        return render_template("index.html", error="Tracking ID not found", user=current_user())
+
+    route = shipment.get("route") or []
+    if not isinstance(route, list):
+        route = []
+
+    if not shipment.get("current_location") and route:
+        last = route[-1]
+        if isinstance(last, dict) and "lat" in last and "lng" in last:
+            shipment["current_location"] = {"lat": last["lat"], "lng": last["lng"]}
+            shipments[tracking_id] = shipment
+            save_json(SHIPMENTS_FILE, shipments)
+
+    current_location = shipment.get("current_location")
+    events = sort_events(shipment.get("events", []))
+
+    u = current_user()
+    logged = is_logged_in()
+    admin = is_admin()
+
+    owner_email = (shipment.get("owner_email") or "").strip().lower()
+    viewer_email = (u.get("email") if u else "").strip().lower()
+    is_owner = logged and owner_email and (viewer_email == owner_email)
+
+    fees = shipment.get("fees")
+    display_status = shipment.get("status", "Unknown")
+    can_view_sensitive = admin or is_owner
+
+    fees_visible = None
+    if fees and isinstance(fees, dict) and not fees.get("paid", True):
+        if not can_view_sensitive:
+            display_status = "Package held for customs fees — log in to continue and take further action"
+            fees_visible = {"exists": True, "paid": False}
+        else:
+            if fees.get("payment_submitted"):
+                display_status = "Payment Submitted - Pending Verification"
+            else:
+                display_status = "On Hold for Customs/Taxes Payment"
+            fees_visible = fees
+    else:
+        fees_visible = fees if can_view_sensitive else None
+
+    est = shipment.get("estimated_delivery")
+    est_tbd = bool(shipment.get("estimated_delivery_tbd_on_hold", False))
+    if est_tbd:
+        est = "Date will be made available when hold clears"
+
+    return render_template(
+        "track.html",
+        user=u,
+        logged_in=logged,
+        is_admin=admin,
+        is_owner=is_owner,
+        owner_email=owner_email,
+        tracking_id=tracking_id,
+        status=display_status,
+        estimated_delivery=est,
+        origin=shipment.get("origin"),
+        destination=shipment.get("destination"),
+        package_details=shipment.get("package_details"),
+        route=route,
+        current_location=current_location,
+        events=events,
+        fees=fees_visible,
+    )
+
+
+# -----------------------
+# Payment page
+# -----------------------
+@app.route("/pay/<tracking_id>", methods=["GET"])
+def payment_page(tracking_id):
+    gate = require_login(next_url=url_for("payment_page", tracking_id=tracking_id))
+    if gate:
+        return gate
+
+    shipments = load_json(SHIPMENTS_FILE, {})
+    shipment = shipments.get(tracking_id)
+    if not shipment:
+        return redirect(url_for("track", tracking_id=tracking_id))
+
+    u = current_user()
+    admin = is_admin()
+    owner_email = (shipment.get("owner_email") or "").strip().lower()
+    viewer_email = (u.get("email") if u else "").strip().lower()
+    is_owner = owner_email and (viewer_email == owner_email)
+
+    if not (admin or is_owner):
+        return redirect(url_for("track", tracking_id=tracking_id))
+
+    fees = shipment.get("fees")
+    if not fees or not isinstance(fees, dict) or fees.get("paid"):
+        return redirect(url_for("track", tracking_id=tracking_id))
+
+    return render_template("payment.html", user=u, tracking_id=tracking_id, fees=fees)
+
+
+# -----------------------
+# NEW: Initiate Payment -> generates code and opens chat
+# -----------------------
+@app.route("/initiate_payment/<tracking_id>", methods=["POST"])
+def initiate_payment(tracking_id):
+    gate = require_login(next_url=url_for("payment_page", tracking_id=tracking_id))
+    if gate:
+        return gate
+
+    shipments = load_json(SHIPMENTS_FILE, {})
+    shipment = shipments.get(tracking_id)
+    if not shipment:
+        return redirect(url_for("track", tracking_id=tracking_id))
+
+    u = current_user()
+    admin = is_admin()
+
+    owner_email = (shipment.get("owner_email") or "").strip().lower()
+    viewer_email = (u.get("email") if u else "").strip().lower()
+    is_owner = owner_email and (viewer_email == owner_email)
+    if not (admin or is_owner):
+        return redirect(url_for("track", tracking_id=tracking_id))
+
+    fees = shipment.get("fees")
+    if not fees or not isinstance(fees, dict) or fees.get("paid"):
+        return redirect(url_for("track", tracking_id=tracking_id))
+
+    payment_method = (request.form.get("payment_method") or "").strip()
+    payer_email = (request.form.get("payer_email") or "").strip().lower()
+
+    if not payment_method or not payer_email:
+        return redirect(url_for("payment_page", tracking_id=tracking_id))
+
+    code = _make_code(8)
+
+    fees["payment_method"] = payment_method
+    fees["payer_email"] = payer_email
+    fees["init_code"] = code
+    fees["init_code_received"] = False
+    fees["payment_submitted"] = False
+    fees["initiated_at"] = now_str()
+
+    shipment["fees"] = fees
+    shipments[tracking_id] = shipment
+    save_json(SHIPMENTS_FILE, shipments)
+
+    # ensure chat thread exists
+    chat_ensure_thread(tracking_id, owner_email)
+
+    # system message telling user the code
+    chat_add_message(
+        tracking_id,
+        "system",
+        f"Payment initiated. Your verification code is: {code}. Please send this code in this chat to continue."
+    )
+
+    return redirect(url_for("payment_chat", tracking_id=tracking_id))
+
+
+# -----------------------
+# NEW: Payment chat (User)
+# -----------------------
+@app.route("/payment_chat/<tracking_id>", methods=["GET", "POST"])
+def payment_chat(tracking_id):
+    gate = require_login(next_url=url_for("payment_chat", tracking_id=tracking_id))
+    if gate:
+        return gate
+
+    shipments = load_json(SHIPMENTS_FILE, {})
+    shipment = shipments.get(tracking_id)
+    if not shipment:
+        return redirect(url_for("track", tracking_id=tracking_id))
+
+    u = current_user()
+    admin = is_admin()
+
+    owner_email = (shipment.get("owner_email") or "").strip().lower()
+    viewer_email = (u.get("email") if u else "").strip().lower()
+    is_owner = owner_email and (viewer_email == owner_email)
+    if not (admin or is_owner):
+        return redirect(url_for("track", tracking_id=tracking_id))
+
+    # mark read whenever user is on chat
+    chat_mark_read(tracking_id)
+
+    fees = shipment.get("fees") if isinstance(shipment.get("fees"), dict) else {}
+    thread = chat_ensure_thread(tracking_id, owner_email)
+    msgs = thread.get("messages") or []
+
+    if request.method == "POST":
+        text = (request.form.get("message") or "").strip()
+        if text:
+            chat_add_message(tracking_id, "user", text)
+
+            # AUTO SYSTEM MESSAGE when user sends code for the first time
+            init_code = (fees.get("init_code") or "").strip().upper()
+            if init_code and (not fees.get("init_code_received")):
+                # if the user typed the code anywhere in message
+                if init_code in text.upper():
+                    fees["init_code_received"] = True
+                    fees["payment_submitted"] = True  # now it's pending admin verification
+                    shipment["fees"] = fees
+                    shipment["status"] = "On Hold"
+
+                    shipment.setdefault("events", []).append({
+                        "date": now_str(),
+                        "location": "Payment Chat",
+                        "description": "Verification code received - awaiting payment details"
+                    })
+
+                    shipments[tracking_id] = shipment
+                    save_json(SHIPMENTS_FILE, shipments)
+
+                    chat_add_message(
+                        tracking_id,
+                        "system",
+                        "✅ Your request is being processed. You will receive payment details to make payment shortly."
+                    )
+
+        return redirect(url_for("payment_chat", tracking_id=tracking_id))
+
+    return render_template(
+        "payment_chat.html",
+        user=u,
+        tracking_id=tracking_id,
+        messages=msgs
+    )
+
+
+# -----------------------
+# NEW: Admin chat (Admin)
+# -----------------------
+@app.route("/admin/chat/<tracking_id>", methods=["GET", "POST"])
+def admin_chat(tracking_id):
+    gate = require_admin(next_url=url_for("admin_chat", tracking_id=tracking_id))
+    if gate:
+        return gate
+
+    shipments = load_json(SHIPMENTS_FILE, {})
+    shipment = shipments.get(tracking_id, {})
+    owner_email = (shipment.get("owner_email") or "").strip().lower()
+
+    thread = chat_ensure_thread(tracking_id, owner_email)
+    msgs = thread.get("messages") or []
+
+    if request.method == "POST":
+        text = (request.form.get("message") or "").strip()
+        if text:
+            chat_add_message(tracking_id, "admin", text)
+        return redirect(url_for("admin_chat", tracking_id=tracking_id))
+
+    return render_template(
+        "admin_chat.html",
+        user=current_user(),
+        tracking_id=tracking_id,
+        owner_email=owner_email,
+        messages=msgs
+    )
+
+
+# -----------------------
+# Admin Panel (Shipments + Applications)
+# (KEEP YOUR EXISTING ADMIN PANEL CODE BELOW THIS POINT)
+# -----------------------
+@app.route("/admin", methods=["GET", "POST"])
+def admin_panel():
+    gate = require_admin(next_url=url_for("admin_panel"))
+    if gate:
+        return gate
+
+    shipments = load_json(SHIPMENTS_FILE, {})
+    applications = load_json(APPLICATIONS_FILE, {})
+
+    # Shipment upsert (create/update)
+    if request.method == "POST":
+        form_type = (request.form.get("form_type") or "").strip().lower()
+        if form_type != "shipment":
+            return redirect(url_for("admin_panel"))
+
+        tracking_id = request.form.get("tracking_id", "").strip()
+        status = request.form.get("status", "").strip()
+        owner_email = request.form.get("owner_email", "").strip().lower()
+
+        origin = request.form.get("origin", "").strip()
+        destination = request.form.get("destination", "").strip()
+        package_details = request.form.get("package_details", "").strip()
+
+        estimated_delivery = request.form.get("estimated_delivery", "").strip()
+        estimated_delivery_tbd = True if request.form.get("estimated_delivery_tbd_on_hold") == "on" else False
+
+        fees_amount_raw = request.form.get("fees_amount")
+        fees_reason_raw = request.form.get("fees_reason")
+        clear_fees = False
+        fees_paid = True if request.form.get("fees_paid") == "on" else False
+
+        route_raw = (request.form.get("route") or "").strip()
+        current_location_raw = (request.form.get("current_location") or "").strip()
+
+        if not tracking_id or not status:
+            return ("Missing required fields (tracking_id, status).", 400)
+
+        existing = shipments.get(tracking_id, {})
+        old_status = existing.get("status", "")
+
+        updated = {**existing}
+        updated["status"] = status
+
+        if owner_email:
+            updated["owner_email"] = owner_email
+        else:
+            updated.setdefault("owner_email", existing.get("owner_email", ""))
+
+        if origin:
+            updated["origin"] = origin
+        if destination:
+            updated["destination"] = destination
+        if package_details:
+            updated["package_details"] = package_details
+
+        updated["estimated_delivery_tbd_on_hold"] = bool(estimated_delivery_tbd)
+        if estimated_delivery_tbd:
+            updated["estimated_delivery"] = None
+        else:
+            if estimated_delivery:
+                updated["estimated_delivery"] = estimated_delivery
+
+        route = None
+        if route_raw:
+            try:
+                route = json.loads(route_raw)
+                if not isinstance(route, list):
+                    return ("Route must be a JSON array", 400)
+            except Exception:
+                return ("Invalid JSON for route", 400)
+        else:
+            if (updated.get("origin") or "") and (updated.get("destination") or ""):
+                route = generate_route(updated.get("origin"), updated.get("destination"))
+            else:
+                route = existing.get("route") if isinstance(existing.get("route"), list) else []
+
+        updated["route"] = route
+
+        if current_location_raw:
+            try:
+                cl = json.loads(current_location_raw)
+                if not isinstance(cl, dict):
+                    return ("Current location must be a JSON object", 400)
+                updated["current_location"] = cl
+            except Exception:
+                return ("Invalid JSON for current_location", 400)
+        else:
+            updated.setdefault("current_location", existing.get("current_location"))
+
+        updated.setdefault("events", existing.get("events", []))
+
+        apply_fees_logic(updated, updated["status"], fees_amount_raw, fees_reason_raw, clear_fees)
+
+        if fees_paid and isinstance(updated.get("fees"), dict):
+            updated["fees"]["paid"] = True
+            updated["fees"]["payment_submitted"] = False
+
+        add_status_event_if_changed(updated, old_status, updated["status"])
+
+        shipments[tracking_id] = updated
+        save_json(SHIPMENTS_FILE, shipments)
+        return redirect(url_for("admin_panel"))
+
+    ship_list = []
+    for tid, s in shipments.items():
+        ship_list.append({
+            "tracking_id": tid,
+            "status": s.get("status", "Unknown"),
+            "fees": s.get("fees"),
+            "owner_email": s.get("owner_email", ""),
+            "origin": s.get("origin"),
+            "destination": s.get("destination"),
+            "estimated_delivery": s.get("estimated_delivery"),
+            "estimated_delivery_tbd_on_hold": bool(s.get("estimated_delivery_tbd_on_hold", False)),
+        })
+
+    app_list = []
+    for email, a in applications.items():
+        if isinstance(a, dict):
+            app_list.append({
+                "email": a.get("email", email),
+                "name": a.get("name", ""),
+                "reason": a.get("reason", ""),
+                "status": a.get("status", "pending"),
+                "submitted_at": a.get("submitted_at", ""),
+                "admin_note": a.get("admin_note", ""),
+            })
+    app_list.sort(key=lambda x: x.get("submitted_at", ""), reverse=True)
+
+    return render_template("admin.html", user=current_user(), shipments=ship_list, applications=app_list)
+
+
+@app.route("/admin/approve/<email>", methods=["POST"])
+def admin_approve_application(email):
+    gate = require_admin(next_url=url_for("admin_panel"))
+    if gate:
+        return gate
+
+    email = (email or "").strip().lower()
+    password = request.form.get("password", "")
+    admin_note = (request.form.get("admin_note") or "").strip()
+
+    if not email or not password:
+        return ("Email and password are required", 400)
+
+    applications = load_json(APPLICATIONS_FILE, {})
+    app_entry = applications.get(email)
+    if not app_entry:
+        return redirect(url_for("admin_panel"))
+
+    users = load_json(USERS_FILE, {})
+    if email not in users:
+        users[email] = {
+            "email": email,
+            "name": app_entry.get("name", ""),
+            "password": password,  # PLAIN
+            "role": "user",
+            "active": True,
+            "created_at": now_str(),
+        }
+        save_json(USERS_FILE, users)
+
+    app_entry["status"] = "approved"
+    app_entry["admin_note"] = admin_note
+    applications[email] = app_entry
+    save_json(APPLICATIONS_FILE, applications)
+
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/admin/reject/<email>", methods=["POST"])
+def admin_reject_application(email):
+    gate = require_admin(next_url=url_for("admin_panel"))
+    if gate:
+        return gate
+
+    email = (email or "").strip().lower()
+    admin_note = (request.form.get("admin_note") or "").strip()
+
+    applications = load_json(APPLICATIONS_FILE, {})
+    app_entry = applications.get(email)
+    if not app_entry:
+        return redirect(url_for("admin_panel"))
+
+    app_entry["status"] = "rejected"
+    app_entry["admin_note"] = admin_note
+    applications[email] = app_entry
+    save_json(APPLICATIONS_FILE, applications)
+
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/delete/<tracking_id>", methods=["POST"])
+def delete_shipment(tracking_id):
+    gate = require_admin(next_url=url_for("admin_panel"))
+    if gate:
+        return gate
+
+    shipments = load_json(SHIPMENTS_FILE, {})
+    if tracking_id in shipments:
+        shipments.pop(tracking_id)
+        save_json(SHIPMENTS_FILE, shipments)
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/verify_payment/<tracking_id>", methods=["POST"])
+def verify_payment(tracking_id):
+    gate = require_admin(next_url=url_for("admin_panel"))
+    if gate:
+        return gate
+
+    shipments = load_json(SHIPMENTS_FILE, {})
+    shipment = shipments.get(tracking_id)
+    if not shipment:
+        return redirect(url_for("admin_panel"))
+
+    fees = shipment.get("fees")
+    if fees and isinstance(fees, dict) and fees.get("payment_submitted") and not fees.get("paid", False):
+        fees["paid"] = True
+        fees["payment_submitted"] = False
+        shipment["fees"] = fees
+
+        old_status = shipment.get("status", "")
+        shipment["status"] = "In Transit"
+
+        shipment.setdefault("events", []).append({
+            "date": now_str(),
+            "location": "Admin Verification",
+            "description": "Payment Verified - Shipment Released"
+        })
+
+        add_status_event_if_changed(shipment, old_status, shipment["status"])
+
+        shipments[tracking_id] = shipment
+        save_json(SHIPMENTS_FILE, shipments)
+
+    return redirect(url_for("admin_panel"))
+
+
+# -----------------------
+# Website pages
+# -----------------------
+@app.route("/contact")
+def contact():
+    return render_template("contact.html", user=current_user())
+
+@app.route("/claims")
+def claims():
+    return render_template("claims.html", user=current_user())
+
+@app.route("/privacy")
+def privacy():
+    return render_template("privacy.html", user=current_user())
+
+@app.route("/prohibited-items")
+def prohibited_items():
+    return render_template("prohibited_items.html", user=current_user())
+
+@app.route("/prohibited_items")
+def prohibited_items_alias():
+    return redirect(url_for("prohibited_items"))
+
+@app.route("/quote")
+def quote():
+    return render_template("quote.html", user=current_user())
+
+@app.route("/services")
+def services():
+    return render_template("services.html", user=current_user())
+
+@app.route("/locations")
+def locations():
+    return render_template("locations.html", user=current_user())
+
+@app.route("/policies")
+def policies():
+    return render_template("policies.html", user=current_user())
+
+@app.route("/support")
+def support():
+    return render_template("support.html", user=current_user())
+
+@app.route("/terms")
+def terms():
+    return render_template("terms.html", user=current_user())
+
+
+if __name__ == "__main__":
+    app.run(debug=True)

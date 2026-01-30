@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Blueoakexpress | Get a Quote</title>
+  <style>
+    :root{--brand:#003366;--bg:#f4f7fa;--card:#fff;--line:#e6eaf0;--muted:#5a667a;--good:#1f8f4e;}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Arial,sans-serif;background:var(--bg);color:#0b1220;}
+    a{color:var(--brand);text-decoration:none;font-weight:800}
+    a:hover{text-decoration:underline}
+    .wrap{max-width:900px;margin:0 auto;padding:18px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:0 8px 24px rgba(11,18,32,.06)}
+    h1{margin:0 0 8px;color:var(--brand)}
+    .muted{color:var(--muted);line-height:1.55}
+    label{display:block;margin:10px 0 6px;font-weight:900;color:#1b2a44}
+    input,select{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;outline:none;background:#fff}
+    .btn{margin-top:12px;padding:12px 16px;border-radius:10px;background:var(--good);color:#fff;font-weight:900;border:0;cursor:pointer}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/">← Home</a>
+  <div class="card" style="margin-top:12px;">
+    <h1>Get a Quote</h1>
+    <p class="muted">This is a placeholder form. We’ll connect pricing logic later.</p>
+
+    <form>
+      <label>Origin</label>
+      <input placeholder="City, Country" />
+
+      <label>Destination</label>
+      <input placeholder="City, Country" />
+
+      <label>Package Weight</label>
+      <input placeholder="e.g. 5kg" />
+
+      <label>Service</label>
+      <select>
+        <option>Express</option>
+        <option>Economy</option>
+        <option>Freight</option>
+      </select>
+
+      <button class="btn" type="button">Estimate (Coming Soon)</button>
+    </form>
+  </div>
+</div>
+</body>
+</html>

@@ -11,7 +11,7 @@ app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "change_this_secret_key_
 SHIPMENTS_FILE = "shipments.json"
 USERS_FILE = "users.json"
 APPLICATIONS_FILE = "applications.json"
-CHATS_FILE = "chats.json"   # NEW: chat storage
+CHATS_FILE = "chats.json"   # chat storage
 
 DEFAULT_ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@blueoakexpress.com").strip().lower()
 DEFAULT_ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
@@ -76,7 +76,7 @@ def ensure_default_admin_exists():
         users[DEFAULT_ADMIN_EMAIL] = {
             "email": DEFAULT_ADMIN_EMAIL,
             "name": "Blueoakexpress Admin",
-            "password": DEFAULT_ADMIN_PASSWORD,  # PLAIN
+            "password": DEFAULT_ADMIN_PASSWORD,  # PLAIN (demo)
             "role": "admin",
             "active": True,
             "created_at": now_str(),
@@ -121,7 +121,7 @@ def require_login(next_url=None):
 
 
 def require_admin(next_url=None):
-    # Always ensure admin exists before checking
+    # Ensure admin always exists before checking
     ensure_default_admin_exists()
 
     if not is_admin():
@@ -129,7 +129,6 @@ def require_admin(next_url=None):
             return redirect(url_for("login", next=next_url))
         return redirect(url_for("login"))
     return None
-
 
 
 # -----------------------
@@ -176,7 +175,7 @@ def add_status_event_if_changed(shipment: dict, old_status: str, new_status: str
 
 
 # -----------------------
-# Route auto-generation (simple + realistic)
+# Route auto-generation
 # -----------------------
 CITY_DB = {
     "accra": {"lat": 5.6037, "lng": -0.1870, "label": "Accra, Ghana"},
@@ -191,6 +190,7 @@ CITY_DB = {
     "toronto": {"lat": 43.6532, "lng": -79.3832, "label": "Toronto, Canada"},
 }
 
+
 def find_city_coords(text: str):
     if not text:
         return None
@@ -200,8 +200,10 @@ def find_city_coords(text: str):
             return v
     return None
 
+
 def lerp(a, b, t):
     return a + (b - a) * t
+
 
 def generate_route(origin_text: str, dest_text: str):
     o = find_city_coords(origin_text)
@@ -220,6 +222,7 @@ def generate_route(origin_text: str, dest_text: str):
         f"Destination Facility — {d['label']}",
     ]
     steps = [0.0, 0.22, 0.55, 0.82, 1.0]
+
     points = []
     for lab, t in zip(labels, steps):
         points.append({
@@ -231,18 +234,21 @@ def generate_route(origin_text: str, dest_text: str):
 
 
 # -----------------------
-# CHAT helpers (NEW)
+# CHAT helpers
 # -----------------------
 def _chat_safe_tracking(tracking_id: str):
     return (tracking_id or "").strip()
+
 
 def _make_code(n=8):
     alphabet = string.ascii_uppercase + string.digits
     return "".join(random.choice(alphabet) for _ in range(n))
 
+
 def chat_get_thread(tracking_id: str):
     chats = load_json(CHATS_FILE, {})
     return chats.get(tracking_id)
+
 
 def chat_ensure_thread(tracking_id: str, owner_email: str):
     tracking_id = _chat_safe_tracking(tracking_id)
@@ -259,6 +265,7 @@ def chat_ensure_thread(tracking_id: str, owner_email: str):
             chats[tracking_id] = th
             save_json(CHATS_FILE, chats)
     return th
+
 
 def chat_add_message(tracking_id: str, sender: str, text: str):
     tracking_id = _chat_safe_tracking(tracking_id)
@@ -282,6 +289,7 @@ def chat_add_message(tracking_id: str, sender: str, text: str):
     chats[tracking_id] = th
     save_json(CHATS_FILE, chats)
 
+
 def chat_mark_read(tracking_id: str):
     tracking_id = _chat_safe_tracking(tracking_id)
     last_read = session.get("chat_last_read", {})
@@ -290,10 +298,8 @@ def chat_mark_read(tracking_id: str):
     last_read[tracking_id] = now_ts()
     session["chat_last_read"] = last_read
 
+
 def chat_unread_count_for_user(user_email: str):
-    """
-    Returns (count, latest_tracking_id) for unread admin/system messages for this user.
-    """
     user_email = (user_email or "").strip().lower()
     if not user_email:
         return (0, None)
@@ -325,6 +331,7 @@ def chat_unread_count_for_user(user_email: str):
 
     return (unread, latest_tid)
 
+
 @app.context_processor
 def inject_chat_notifications():
     u = current_user()
@@ -352,6 +359,7 @@ def login():
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
+
         users = load_json(USERS_FILE, {})
         u = users.get(email)
 
@@ -413,6 +421,18 @@ def signup():
                                success="Account creating pending approval. You will be contacted by email after review.")
 
     return render_template("signup.html", user=current_user())
+
+
+# -----------------------
+# NEW: Ship page (UI-only)
+# -----------------------
+@app.route("/ship", methods=["GET", "POST"])
+def ship():
+    # No new DB needed; just show success message on post
+    if request.method == "POST":
+        return render_template("ship.html", user=current_user(),
+                               success="✅ Shipment request received. We’ll contact you by email with next steps.")
+    return render_template("ship.html", user=current_user())
 
 
 # -----------------------
@@ -566,7 +586,7 @@ def payment_page(tracking_id):
 
 
 # -----------------------
-# NEW: Initiate Payment -> generates code and opens chat
+# Initiate Payment -> generates code and opens chat
 # -----------------------
 @app.route("/initiate_payment/<tracking_id>", methods=["POST"])
 def initiate_payment(tracking_id):
@@ -611,10 +631,8 @@ def initiate_payment(tracking_id):
     shipments[tracking_id] = shipment
     save_json(SHIPMENTS_FILE, shipments)
 
-    # ensure chat thread exists
     chat_ensure_thread(tracking_id, owner_email)
 
-    # system message telling user the code
     chat_add_message(
         tracking_id,
         "system",
@@ -625,7 +643,7 @@ def initiate_payment(tracking_id):
 
 
 # -----------------------
-# NEW: Payment chat (User)
+# Payment chat (User)
 # -----------------------
 @app.route("/payment_chat/<tracking_id>", methods=["GET", "POST"])
 def payment_chat(tracking_id):
@@ -647,7 +665,6 @@ def payment_chat(tracking_id):
     if not (admin or is_owner):
         return redirect(url_for("track", tracking_id=tracking_id))
 
-    # mark read whenever user is on chat
     chat_mark_read(tracking_id)
 
     fees = shipment.get("fees") if isinstance(shipment.get("fees"), dict) else {}
@@ -659,13 +676,11 @@ def payment_chat(tracking_id):
         if text:
             chat_add_message(tracking_id, "user", text)
 
-            # AUTO SYSTEM MESSAGE when user sends code for the first time
             init_code = (fees.get("init_code") or "").strip().upper()
             if init_code and (not fees.get("init_code_received")):
-                # if the user typed the code anywhere in message
                 if init_code in text.upper():
                     fees["init_code_received"] = True
-                    fees["payment_submitted"] = True  # now it's pending admin verification
+                    fees["payment_submitted"] = True
                     shipment["fees"] = fees
                     shipment["status"] = "On Hold"
 
@@ -695,7 +710,7 @@ def payment_chat(tracking_id):
 
 
 # -----------------------
-# NEW: Admin chat (Admin)
+# Admin chat (Admin)
 # -----------------------
 @app.route("/admin/chat/<tracking_id>", methods=["GET", "POST"])
 def admin_chat(tracking_id):
@@ -727,7 +742,6 @@ def admin_chat(tracking_id):
 
 # -----------------------
 # Admin Panel (Shipments + Applications)
-# (KEEP YOUR EXISTING ADMIN PANEL CODE BELOW THIS POINT)
 # -----------------------
 @app.route("/admin", methods=["GET", "POST"])
 def admin_panel():
@@ -738,7 +752,6 @@ def admin_panel():
     shipments = load_json(SHIPMENTS_FILE, {})
     applications = load_json(APPLICATIONS_FILE, {})
 
-    # Shipment upsert (create/update)
     if request.method == "POST":
         form_type = (request.form.get("form_type") or "").strip().lower()
         if form_type != "shipment":
@@ -791,6 +804,7 @@ def admin_panel():
             if estimated_delivery:
                 updated["estimated_delivery"] = estimated_delivery
 
+        # route
         route = None
         if route_raw:
             try:
@@ -807,6 +821,7 @@ def admin_panel():
 
         updated["route"] = route
 
+        # current location
         if current_location_raw:
             try:
                 cl = json.loads(current_location_raw)
@@ -861,6 +876,56 @@ def admin_panel():
     return render_template("admin.html", user=current_user(), shipments=ship_list, applications=app_list)
 
 
+# -----------------------
+# ✅ FIX: Admin inline update route (your admin.html needs this)
+# -----------------------
+@app.route("/admin/update/<tracking_id>", methods=["POST"])
+def admin_update_shipment(tracking_id):
+    gate = require_admin(next_url=url_for("admin_panel"))
+    if gate:
+        return gate
+
+    shipments = load_json(SHIPMENTS_FILE, {})
+    shipment = shipments.get(tracking_id)
+    if not shipment:
+        return redirect(url_for("admin_panel"))
+
+    status = (request.form.get("status") or "").strip()
+    custom_status = (request.form.get("custom_status") or "").strip()
+    if status == "Custom Status" and custom_status:
+        status = custom_status
+
+    fees_amount_raw = request.form.get("fees_amount")
+    fees_reason_raw = request.form.get("fees_reason")
+    clear_fees = request.form.get("clear_fees") == "1"
+
+    estimated_delivery = (request.form.get("estimated_delivery") or "").strip()
+    estimated_delivery_tbd = True if request.form.get("estimated_delivery_tbd_on_hold") == "on" else False
+
+    old_status = shipment.get("status", "")
+
+    if status:
+        shipment["status"] = status
+
+    # expected delivery behavior
+    shipment["estimated_delivery_tbd_on_hold"] = bool(estimated_delivery_tbd)
+    if estimated_delivery_tbd:
+        shipment["estimated_delivery"] = None
+    else:
+        if estimated_delivery:
+            shipment["estimated_delivery"] = estimated_delivery
+
+    # fees
+    apply_fees_logic(shipment, shipment.get("status", ""), fees_amount_raw, fees_reason_raw, clear_fees)
+
+    # add timeline event
+    add_status_event_if_changed(shipment, old_status, shipment.get("status", ""))
+
+    shipments[tracking_id] = shipment
+    save_json(SHIPMENTS_FILE, shipments)
+    return redirect(url_for("admin_panel"))
+
+
 @app.route("/admin/approve/<email>", methods=["POST"])
 def admin_approve_application(email):
     gate = require_admin(next_url=url_for("admin_panel"))
@@ -884,7 +949,7 @@ def admin_approve_application(email):
         users[email] = {
             "email": email,
             "name": app_entry.get("name", ""),
-            "password": password,  # PLAIN
+            "password": password,
             "role": "user",
             "active": True,
             "created_at": now_str(),
